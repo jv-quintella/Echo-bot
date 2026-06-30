@@ -6,7 +6,8 @@ const {
     Events, 
     EmbedBuilder, 
     ActionRowBuilder, 
-    StringSelectMenuBuilder,
+    ButtonBuilder,
+    ButtonStyle,
     ComponentType
 } = require('discord.js');
 const cheerio = require('cheerio');
@@ -20,143 +21,151 @@ const client = new Client({
 });
 
 client.once(Events.ClientReady, (c) => {
-    console.log(`Logada com sucesso como ${c.user.tag}`);
+    console.log(`Logged in successfully as ${c.user.tag}`);
 });
 
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     
-    if (message.content === '!notas') {
-        const loadingMsg = await message.reply('Acessando o banco de dados da Blizzard...');
+    const args = message.content.trim().split(/ +/);
+    const command = args[0].toLowerCase();
+
+    if (command === '!patch') {
+        const loadingMsg = await message.reply('Accessing Blizzard database...');
 
         try {
-            const urlOficial = 'https://overwatch.blizzard.com/pt-br/news/patch-notes/';
-            const response = await fetch(urlOficial);
+            const officialUrl = 'https://overwatch.blizzard.com/en-us/news/patch-notes/';
+            const response = await fetch(officialUrl);
             const html = await response.text();
 
             const $ = cheerio.load(html);
 
-            const tituloPatch = $('h3').first().text().trim() || 'Ultima Atualizacao';
+            const patchTitle = $('h3').first().text().trim() || 'Latest Update';
             
-            const secoes = [];
-            let secaoAtual = { titulo: 'Visao Geral', conteudo: '' };
+            const pages = [];
+            let currentPageContent = '';
+            let h3Count = 0;
 
-            $('.PatchNotes-body').first().find('h3, h4, ul, p').each((index, element) => {
+            const pushPage = () => {
+                if (currentPageContent.trim()) {
+                    pages.push(currentPageContent.trim());
+                }
+                currentPageContent = '';
+            };
+
+            $('.PatchNotes-body').first().find('h3, h4, h5, ul, p').each((index, element) => {
                 const tag = element.tagName.toLowerCase();
-                const texto = $(element).text().trim();
+                const text = $(element).text().trim();
 
-                if (!texto) return;
+                if (!text) return;
 
                 if (tag === 'h3') {
-                    if (secaoAtual.conteudo.trim().length > 0) {
-                        secoes.push(secaoAtual);
-                    }
-                    secaoAtual = { titulo: texto.substring(0, 90), conteudo: '' };
-                } else {
-                    let textoAdicional = '';
-
-                    if (tag === 'h4') {
-                        textoAdicional = `\n\n**${texto}**\n`;
-                    } else if (tag === 'ul') {
-                        $(element).find('li').each((i, li) => {
-                            textoAdicional += `- ${$(li).text().trim()}\n`;
-                        });
-                    } else if (tag === 'p') {
-                        textoAdicional = `${texto}\n`;
-                    }
-
-                    if (textoAdicional) {
-                        if (secaoAtual.conteudo.length + textoAdicional.length > 3800) {
-                            secoes.push(secaoAtual);
-                            
-                            let novoTitulo = secaoAtual.titulo;
-                            if (!novoTitulo.endsWith('(Cont.)')) {
-                                novoTitulo = novoTitulo + ' (Cont.)';
-                            }
-                            
-                            secaoAtual = { titulo: novoTitulo, conteudo: textoAdicional };
-                        } else {
-                            secaoAtual.conteudo += textoAdicional;
-                        }
-                    }
+                    h3Count++;
+                    if (h3Count > 1) return false;
                 }
+
+                let additionalText = '';
+
+                if (tag === 'h3' || tag === 'h4' || tag === 'h5') {
+                    additionalText = `\n\n**${text}**\n`;
+                } else if (tag === 'ul') {
+                    $(element).find('li').each((i, li) => {
+                        additionalText += `- ${$(li).text().trim()}\n`;
+                    });
+                } else if (tag === 'p') {
+                    additionalText = `${text}\n`;
+                }
+
+                if (currentPageContent.length + additionalText.length > 3800) {
+                    pushPage();
+                }
+                currentPageContent += additionalText;
             });
+            
+            pushPage();
 
-            if (secaoAtual.conteudo.trim().length > 0) {
-                secoes.push(secaoAtual);
-            }
-
-            if (secoes.length === 0) {
-                await loadingMsg.edit('Nenhum conteudo encontrado na pagina.');
+            if (pages.length === 0) {
+                await loadingMsg.edit('No content found on the page.');
                 return;
             }
 
-            const opcoesMenu = secoes.slice(0, 25).map((secao, index) => {
-                return {
-                    label: secao.titulo,
-                    value: index.toString()
-                };
-            });
+            let currentIndex = 0;
 
-            const menu = new StringSelectMenuBuilder()
-                .setCustomId('menu_notas')
-                .setPlaceholder('Selecione uma categoria para ler')
-                .addOptions(opcoesMenu);
-
-            const linha = new ActionRowBuilder().addComponents(menu);
-
-            const embedInicial = new EmbedBuilder()
-                .setColor('#F99E1A')
-                .setTitle(tituloPatch)
-                .setURL(urlOficial)
-                .setDescription('As notas de atualizacao foram divididas em categorias. Use o menu abaixo para navegar pelo conteudo.')
-                .setFooter({ 
-                    text: 'Echo Bot - Dados extraidos do site oficial', 
-                    iconURL: client.user.displayAvatarURL() 
-                });
-
-            const mensagemComMenu = await loadingMsg.edit({ 
-                content: '', 
-                embeds: [embedInicial], 
-                components: [linha] 
-            });
-
-            const coletor = mensagemComMenu.createMessageComponentCollector({ 
-                componentType: ComponentType.StringSelect, 
-                time: 300000 
-            });
-
-            coletor.on('collect', async (interacao) => {
-                if (interacao.user.id !== message.author.id) {
-                    await interacao.reply({ content: 'Apenas quem usou o comando pode navegar neste menu.', ephemeral: true });
-                    return;
-                }
-
-                const indiceEscolhido = parseInt(interacao.values[0]);
-                const secaoEscolhida = secoes[indiceEscolhido];
+            const buildComponents = () => {
+                if (pages.length <= 1) return [];
                 
-                const embedAtualizado = new EmbedBuilder()
+                return [
+                    new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('prev_page')
+                            .setLabel('Previous')
+                            .setStyle(ButtonStyle.Primary)
+                            .setDisabled(currentIndex === 0),
+                        new ButtonBuilder()
+                            .setCustomId('next_page')
+                            .setLabel('Next')
+                            .setStyle(ButtonStyle.Primary)
+                            .setDisabled(currentIndex === pages.length - 1)
+                    )
+                ];
+            };
+
+            const buildEmbed = () => {
+                const content = pages[currentIndex];
+                const pageIndicator = pages.length > 1 ? ` - Page ${currentIndex + 1} of ${pages.length}` : '';
+                
+                return new EmbedBuilder()
                     .setColor('#F99E1A')
-                    .setTitle(`${tituloPatch} - ${secaoEscolhida.titulo}`)
-                    .setURL(urlOficial)
-                    .setDescription(secaoEscolhida.conteudo.trim())
+                    .setTitle(`${patchTitle}${pageIndicator}`)
+                    .setDescription(`${content}\n\n**[Click here to read the official patch notes](${officialUrl})**`)
                     .setFooter({ 
-                        text: 'Echo Bot - Dados extraidos do site oficial', 
+                        text: 'Echo Bot - Data extracted from official website', 
                         iconURL: client.user.displayAvatarURL() 
                     });
+            };
 
-                await interacao.update({ embeds: [embedAtualizado] });
+            const initialMessage = await loadingMsg.edit({
+                content: '',
+                embeds: [buildEmbed()],
+                components: buildComponents()
             });
 
-            coletor.on('end', async () => {
-                menu.setDisabled(true);
-                const linhaDesativada = new ActionRowBuilder().addComponents(menu);
-                await mensagemComMenu.edit({ components: [linhaDesativada] }).catch(() => {});
-            });
+            if (pages.length > 1) {
+                const collector = initialMessage.createMessageComponentCollector({ 
+                    componentType: ComponentType.Button,
+                    time: 300000 
+                });
+
+                collector.on('collect', async (interaction) => {
+                    if (interaction.user.id !== message.author.id) {
+                        await interaction.reply({ content: 'Only the user who requested the command can interact.', ephemeral: true });
+                        return;
+                    }
+
+                    if (interaction.customId === 'prev_page') {
+                        currentIndex--;
+                    } else if (interaction.customId === 'next_page') {
+                        currentIndex++;
+                    }
+
+                    await interaction.update({
+                        embeds: [buildEmbed()],
+                        components: buildComponents()
+                    });
+                });
+
+                collector.on('end', async () => {
+                    const rows = buildComponents();
+                    rows.forEach(row => {
+                        row.components.forEach(comp => comp.setDisabled(true));
+                    });
+                    await initialMessage.edit({ components: rows }).catch(() => {});
+                });
+            }
 
         } catch (error) {
             console.error(error);
-            await loadingMsg.edit('Erro! A pagina da Blizzard pode ter mudado de estrutura.');
+            await loadingMsg.edit('Error! The Blizzard page structure might have changed.');
         }
     }
 });
